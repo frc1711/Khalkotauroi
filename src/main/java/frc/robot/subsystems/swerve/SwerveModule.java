@@ -4,6 +4,7 @@ import com.revrobotics.CANSparkMax;
 import com.revrobotics.CANSparkMax.IdleMode;
 import com.revrobotics.CANSparkMaxLowLevel.MotorType;
 
+import claw.hardware.Device;
 import edu.wpi.first.math.controller.SimpleMotorFeedforward;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.kinematics.SwerveModuleState;
@@ -24,14 +25,41 @@ class SwerveModule implements Sendable {
         return RobotController.getBatteryVoltage() / METERS_PER_SEC_TO_DRIVE_VOLTS;
     }
     
-    private static CANSparkMax initializeMotor (int canId) {
-        CANSparkMax motor = new CANSparkMax(canId, MotorType.kBrushless);
-        motor.setIdleMode(IdleMode.kBrake);
+    private static Device<CANSparkMax> initializeMotor (String robotRelativeModulePosition, boolean isSteer) {
+
+        String motorType = "DRIVE";
+        if (isSteer) motorType = "STEER";
+
+        Device<CANSparkMax> motor = new Device<>(
+            "CAN.MOTOR_CONTROLLER.SWERVE." + robotRelativeModulePosition + "." + motorType + "_MOTOR", 
+            id -> {
+                CANSparkMax sparkMax = new CANSparkMax(id, MotorType.kBrushless);
+                sparkMax.setIdleMode(IdleMode.kBrake);
+                return sparkMax;
+            }, 
+            sparkMax -> {
+                sparkMax.stopMotor();
+                sparkMax.close();
+            });
+        
         return motor;
     }
+
+    private static Device<ResettableEncoder> initializeEncoder (String robotRelativeModulePosition) {
+        Device<ResettableEncoder> steerEncoder = new Device<>(
+            "CAN.MOTOR_ENCODER.SWERVE."+robotRelativeModulePosition+".CANCODER", 
+            id -> {
+                ResettableEncoder encoder = new ResettableEncoder(id);
+                encoder.setInverted(false);
+                return encoder;
+            }, 
+            null);
+        
+        return steerEncoder;
+    }
     
-    private final CANSparkMax driveMotor, steerMotor;
-    private final ResettableEncoder steerEncoder;
+    private final Device<CANSparkMax> driveMotor, steerMotor;
+    private final Device<ResettableEncoder> steerEncoder;
     
     private double
         DS_steerOutputVoltage = 0,
@@ -48,14 +76,11 @@ class SwerveModule implements Sendable {
      */
     private final RotationalPID steerPID;
     
-    public SwerveModule (int driveSparkId, int steerSparkId, int steerCANCoderId) {
-        steerPID = new RotationalPID(6/90., 0, 0, 6);
-        
-        driveMotor = initializeMotor(driveSparkId);
-        steerMotor = initializeMotor(steerSparkId);
-        
-        steerEncoder = new ResettableEncoder(steerCANCoderId);
-        steerEncoder.setInverted(true);
+    public SwerveModule (String robotRelativeModulePosition) {
+        steerPID = new RotationalPID(6/90., 0, 0, 6);      
+        driveMotor = initializeMotor(robotRelativeModulePosition, false);
+        steerMotor = initializeMotor(robotRelativeModulePosition, true);
+        steerEncoder = initializeEncoder(robotRelativeModulePosition);
     }
     
     /**
@@ -71,7 +96,7 @@ class SwerveModule implements Sendable {
         if (desiredState.speedMetersPerSecond != 0) {
             updateSteerMotor(optimizedDesiredState.angle);
         } else {
-            steerMotor.setVoltage(0);
+            steerMotor.get().setVoltage(0);
         }
     }
     
@@ -88,7 +113,7 @@ class SwerveModule implements Sendable {
         double voltsOutput = DRIVE_FEEDFORWARD.calculate(METERS_PER_SEC_TO_DRIVE_VOLTS * desiredSpeedMetersPerSec);
         DS_driveOutputVoltage = voltsOutput;
 
-        driveMotor.setVoltage(DS_driveEnabled ? voltsOutput : 0);
+        driveMotor.get().setVoltage(DS_driveEnabled ? voltsOutput : 0);
     }
     
     private void updateSteerMotor (Rotation2d desiredRotation) {
@@ -97,17 +122,17 @@ class SwerveModule implements Sendable {
         double voltsOutput = STEER_FEEDFORWARD.calculate(steerPID.calculate(getRotation(), desiredRotation));
         DS_steerOutputVoltage = voltsOutput;
 
-        steerMotor.setVoltage(DS_driveEnabled ? voltsOutput : 0);
+        steerMotor.get().setVoltage(DS_driveEnabled ? voltsOutput : 0);
     }
     
     /**
      * Stop all motor controllers assigned to this {@link SwerveModule}.
      */
     public void stop () {
-        driveMotor.stopMotor();
+        driveMotor.get().stopMotor();
         DS_desiredDriveSpeed = 0;
         DS_driveOutputVoltage = 0;
-        steerMotor.stopMotor();
+        steerMotor.get().stopMotor();
         DS_steerOutputVoltage = 0;
     }
     
@@ -115,11 +140,11 @@ class SwerveModule implements Sendable {
      * Zero the steer encoder and save its offset to the encoder.
      */
     public void zeroSteerEncoder () {
-        steerEncoder.zeroRotation();
+        steerEncoder.get().zeroRotation();
     }
     
     public Rotation2d getRotation () {
-        return steerEncoder.getRotation();
+        return steerEncoder.get().getRotation();
     }
     
     @Override
@@ -127,8 +152,9 @@ class SwerveModule implements Sendable {
         builder.addDoubleProperty("unop-desiredRotation", () -> DS_unoptimizedDesiredRotation, null);
         builder.addDoubleProperty("desiredRotation", () -> DS_desiredRotation, null);
         builder.addDoubleProperty("desiredDriveSpeed", () -> DS_desiredDriveSpeed, null);
-        builder.addDoubleProperty("currentRotation", () -> steerEncoder.getRotation().getDegrees(), null);
-        builder.addDoubleProperty("outputVoltage", () -> DS_steerOutputVoltage, null);
+        builder.addDoubleProperty("currentRotation", () -> steerEncoder.get().getRotation().getDegrees(), null);
+        builder.addDoubleProperty("steerOutputVoltage", () -> DS_steerOutputVoltage, null);
+        builder.addDoubleProperty("driveOutputVoltage", () -> DS_driveOutputVoltage, null);
 
         builder.addBooleanProperty("Enabled Drive", () -> DS_driveEnabled, e -> DS_driveEnabled = e);
     }
